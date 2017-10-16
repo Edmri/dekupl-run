@@ -149,7 +149,7 @@ rule download_kallisto:
 #
 # DOWNLOAD REFERENCE FILES
 #
-# Download the gencode transcripts in fasta format
+# Download the gencode transcripts in fasta format (if no input transcriptome)
 rule gencode_download:
   output: REF_TRANSCRIPT_FASTA
   shell: "wget ftp://ftp.sanger.ac.uk/pub/gencode/Gencode_human/release_24/gencode.v24.transcripts.fa.gz -O {output}"
@@ -225,15 +225,11 @@ rule kallisto_quantif:
   log : LOGS + "/{sample}_kallisto.log"
   threads: 1
   shell: """
-
          echo -e \"******\" >{log}
          echo -e \"start of rule kallisto_quantif : $(date)\n\" >>{log}
-
          {KALLISTO} quant -i {input.index} -o {output.dir} {input.r1} {input.r2} 2>> {log}
-
          echo -e \"\nend of rule kallisto_quantif : $(date)\n\" >>{log}
          echo -e \"******\" >>{log}
-
          """
 
 # 1.4 Merge all transcripts counts from kallisto abundance files
@@ -309,66 +305,49 @@ rule differential_gene_expression:
     library(RColorBrewer)
     library(pheatmap)
     library(ggplot2)
-
     write(date(),file="{log}")
-
     # Load counts data
     countsData = read.table("{input.gene_counts}",
                             header=T,
                             row.names=1)
-
     # Load col data with sample specifications
     colData = read.table("{input.sample_conditions}",
                          header=T,
                          row.names=1)
-
     write(colnames(countsData),stderr())
     write(rownames(colData),stderr())
-
     colData = colData[colnames(countsData),,drop=FALSE]
-
     # Create DESeq2 object
     dds <- DESeqDataSetFromMatrix(countData=countsData,
                                   colData=colData,
                                   design = ~ {CONDITION_COL})
     dds <- DESeq(dds)
-
     #normalized counts
     NormCount<- as.data.frame(counts(dds, normalized=TRUE ))
-
     #writing in a file normalized counts
     normalized_counts<-data.frame(id=row.names(NormCount),NormCount,row.names=NULL)
     write.table(normalized_counts,file="{output.norm_counts}", sep="\t",row.names=F, col.names=T, quote=F)
-
     write(resultsNames(dds),stderr())
-
     # Write DEGs
     res <- results(dds, contrast = c("{CONDITION_COL}","{CONDITION_A}","{CONDITION_B}"))
     write.table(res,file="{output.differentially_expressed_genes}",sep="\t",quote=FALSE)
-
     rld<-rlog(dds)
     sampleDists<-dist(t(assay(rld) ) )
     sampleDistMatrix<-as.matrix( sampleDists )
     rownames(sampleDistMatrix)<-colnames(rld)
     colnames(sampleDistMatrix)<-colnames(rld)
     colours=colorRampPalette(rev(brewer.pal(9,"Blues")) )(255)
-
     pdf("{output.dist_matrix}",width=15,height=10)
-
     pheatmap(sampleDistMatrix,
 	main="clustering of samples",
 	clustering_distance_rows=sampleDists,
 	clustering_distance_cols=sampleDists,
 	col=colours,
 	fontsize = 14)
-
     data <- plotPCA(rld,ntop=nrow(rld),returnData=TRUE)
     write.table(data,"{output.pca_design}",row.names=F, col.names=T, quote=F,sep="\t")
-
     print(ggplot(data,aes(PC1,PC2,color=condition))+geom_point()+geom_text(aes(label=name),hjust=0,vjust=0))
-
     dev.off()
-
     write(date(),file="{log}",append=T)
     """)
 
@@ -415,15 +394,11 @@ rule jellyfish_dump:
   log :
     exec_time = LOGS + "/{sample}_jellyfishDumpRawCounts_exec_time.log"
   shell: """
-
          echo -e \"******\" >{log.exec_time}
          echo -e \"start of rule jellyfish_dump : $(date)\n\" >>{log.exec_time}
-
          {JELLYFISH_DUMP} -c {input} | {SORT} -k 1 -S {resources.ram}G --parallel {threads}| pigz -p {threads} -c > {output}
-
          echo -e \"\nend of rule jellyfish_dump : $(date)\n\" >>{log.exec_time}
          echo -e \"******\" >>{log.exec_time}
-
          """
 
 rule join_counts:
@@ -438,27 +413,23 @@ rule join_counts:
   run:
     shell("echo 'tag\t{params.sample_names}' | gzip -c > {output}")
     shell("""
-
            echo -e \"******\" >{log.exec_time}
            echo -e \"start of rule join_counts : $(date)\n\" >>{log.exec_time}
-
            {JOIN_COUNTS} -r {MIN_REC} -a {MIN_REC_AB} \
           {input.fastq_files} | gzip -c >> {output}
-
           echo -e \"\nend of rule dekupl_counter : $(date)\n\" >>{log.exec_time}
           echo -e \"******\" >>{log.exec_time}
-
           """)
 
 ###############################################################################
 #
 # STEP 3: FILTER-OUT KNOWN K-MERS
-#         Download gencode transcripts set and remove the k-mer occuring this
+#         Default: download gencode transcripts set and remove the k-mer occuring this
 #         set from the one found in the experimental data
 #
 
-# 3.2 Counts k-mer of all gencode transcript (for further filtration)
-rule gencode_count:
+# 3.2 Counts k-mer of all transcript (for further filtration)
+rule ref_transcript_count:
   input: REF_TRANSCRIPT_FASTA
   output: temp(REF_TRANSCRIPT_FASTA + ".jf")
   threads: MAX_CPU_JELLYFISH
@@ -469,27 +440,22 @@ rule gencode_count:
       options += " -C"
     shell("{JELLYFISH_COUNT} " + options + " <({ZCAT} {input})")
 
-rule gencode_dump:
+rule ref_transcript_dump:
   input: REF_TRANSCRIPT_FASTA + ".jf"
   output: REF_TRANSCRIPT_COUNTS
   log :
-    exec_time = LOGS + "/jellyfishDumpGencodeCounts_exec_time.log"
+    exec_time = LOGS + "/jellyfishDumpRefTrancriptCounts_exec_time.log"
   threads: MAX_CPU_SORT
   resources: ram = MAX_MEM_SORT
   shell: """
-
          echo -e \"******\" >{log.exec_time}
-         echo -e \"start of gencode_dump : $(date)\n\" >>{log.exec_time}
-
-
+         echo -e \"start of ref_transcript_dump: $(date)\n\" >>{log.exec_time}
         {JELLYFISH_DUMP} -c {input} | {SORT} -k 1 -S {resources.ram}G --parallel {threads}| pigz -p {threads} -c > {output}
-
-        echo -e \"\nend of rule gencode_dump : $(date)\n\" >>{log.exec_time}
+        echo -e \"\nend of rule ref_transcript_dump: $(date)\n\" >>{log.exec_time}
         echo -e \"******\" >>{log.exec_time}
-
         """
 
-# 3.3 Filter counter k-mer that are present in the gencode set
+# 3.3 Filter counter k-mer that are present in the transcriptome set
 rule filter_transcript_counts:
   input:
     counts = RAW_COUNTS,
@@ -500,13 +466,9 @@ rule filter_transcript_counts:
   shell: """
          echo -e \"******\" >{log.exec_time}
          echo -e \"start of filter_transcript_counts : $(date)\n\" >>{log.exec_time}
-
          {DIFF_FILTER} {input.ref_transcript_counts} {input.counts} | gzip -c > {output}
-
-
          echo -e \"\nend of filter_transcript_counts : $(date)\n\" >>{log.exec_time}
          echo -e \"******\" >>{log.exec_time}
-
          """
 
 ###############################################################################
@@ -553,4 +515,4 @@ rule merge_tags:
     shell("echo -e \"start of merge_tags : $(date)\n\" >>{log.exec_time}")
     shell("{MERGE_TAGS} " + options + " {input.counts} | gzip -c > {output}")
     shell("echo -e \"\nend of merge_tags : $(date)\n\" >>{log.exec_time}")
-    shell("echo -e \"******\" >>{log.exec_time}")
+shell("echo -e \"******\" >>{log.exec_time}")
